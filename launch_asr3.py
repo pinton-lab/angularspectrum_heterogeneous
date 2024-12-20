@@ -7,6 +7,7 @@ from scipy import signal
 import os
 import matplotlib.pyplot as plt
 from jax import jit, vmap
+import time
 
 from pathlib import Path
 from scipy.signal import hilbert
@@ -396,7 +397,7 @@ wYsubs = np.array([8, 16, 32, 64]) * array_dx
 wYsub = 64 * array_dx
 focs = np.arange(1, 8) * 1e-2  # Changed MATLAB 1:7 to Python equivalent
 focs = 1e-2
-p0 = 0.3e6
+p0 = 0.03e6
 a0 = 0.5  # -1 indicates water
 fcen = np.array([0, 0, 5]) * 1e-2
 
@@ -409,7 +410,7 @@ for ff in range(fcens.shape[0]):
     fcen = fcens[ff, :]
     
     # Create directory strings
-    fstr = f'asr3_butterfly4_beamanalysis_receive_multi3d_f3_gpu2_foc_simple{ff}'
+    fstr = f'/celerina/gfp/mfs/forest/asr3_butterfly4_beamanalysis_receive_multi3d_f3_gpu2_foc_simple{ff}'
     fstr = fstr.replace('.', 'p').replace('-1', 'w')
     basedir = os.path.join('/celerina/gfp/mfs/angularspectrum_python', fstr)
     
@@ -577,6 +578,7 @@ for ff in range(fcens.shape[0]):
     fig = plt.figure(figsize=(20, 24))
 
     # Main propagation loop
+    start_time = time.time()
     while sum(zvec) < prop_dist:
         # Store axial pressure (center of domain)
         pax[:, cc] = apaz[nX//2, nY//2, :]
@@ -592,9 +594,10 @@ for ff in range(fcens.shape[0]):
         if N * dZ/dT * np.max(np.abs(apaz)) > 0.1:
             print('Stability criterion violated, retrying with smaller step size')
             dZ = 0.075 * dT / (np.max(np.abs(apaz)) * N)
+            cc=0;
             
             # Recalculate operators with new step size
-            HH = precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0).astype(np.float32)
+            HH = precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0).astype(np.complex64)
             abl = precalculate_abl(nX, nY, nT, 2e-3/nY/dY).astype(np.float32)
             if a0 == -1:
                 afilt3d = precalculate_ad(alpha0, nX, nY, nT, dZ, dT)
@@ -603,9 +606,9 @@ for ff in range(fcens.shape[0]):
                                                     omega0/(2*np.pi), pow)
             
             # Move to device
-            HH = jnp.array(HH)
-            abl = jnp.array(abl)
-            afilt3d = jnp.array(afilt3d)
+            HH = jnp.array(HH, dtype=jnp.complex64)
+            abl = jnp.array(abl, dtype=jnp.float32)
+            afilt3d = jnp.array(afilt3d*0+1, dtype=jnp.complex64)
             continue
         
         # Current propagation distance
@@ -684,6 +687,9 @@ for ff in range(fcens.shape[0]):
         
         zvec.append(dZ)
         cc += 1
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Simulation run time: {elapsed_time:.2f} seconds")
 
     # Save final results
     np.savez(os.path.join(basedir, 'results.npz'),
