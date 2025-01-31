@@ -11,6 +11,7 @@ import time
 import pdb
 import h5py
 from scipy import interpolate
+from scipy.interpolate import RegularGridInterpolator
 
 from pathlib import Path
 from scipy.signal import hilbert
@@ -533,10 +534,61 @@ def apply_hann_window(ap, fwhm_x=None, fwhm_y=None):
         ap_windowed = ap_windowed * y_window[np.newaxis, :]
     
     return ap_windowed
+
+def interpolate_3d_xyz(coords, data_3d, xaxis, yaxis, zaxis):
+    """
+    Interpolates the 3D matrix (data_3d) on the given list of coordinates.
+    Here, we assume that:
+      - The data_3d array has the shape (len(xaxis), len(yaxis), len(zaxis))
+        (i.e., indexing="ij" style)
+      - coords is an (N x 3) array, where each coordinate is [x, y, z].
+
+    This is consistent with a call like:
+
+        np.meshgrid(xaxis, yaxis, zaxis, indexing="ij")
+
+    followed by reshaping into (N, 3).
+
+    Parameters:
+    -----------
+    coords : np.ndarray
+        A (N x 3) array of 3D coordinates of the form [x, y, z].
+    data_3d : np.ndarray
+        A 3D array representing data over a grid defined by (xaxis, yaxis, zaxis).
+        Must have shape (len(xaxis), len(yaxis), len(zaxis)).
+    xaxis : np.ndarray
+        1D array representing the x-coordinates of the 3D grid.
+    yaxis : np.ndarray
+        1D array representing the y-coordinates of the 3D grid.
+    zaxis : np.ndarray
+        1D array representing the z-coordinates of the 3D grid.
+
+    Returns:
+    --------
+    np.ndarray
+        A 1D array of interpolated values corresponding to each coordinate in coords.
+    """
+    # Ensure the inputs are numpy arrays
+    coords = np.asarray(coords, dtype=np.float32)
+    xaxis = np.asarray(xaxis, dtype=np.float32)
+    yaxis = np.asarray(yaxis, dtype=np.float32)
+    zaxis = np.asarray(zaxis, dtype=np.float32)
+
+    # Create the interpolator
+    # Note that for RegularGridInterpolator, the data is assumed to be ordered as:
+    # data_3d[i, j, k] = value at (xaxis[i], yaxis[j], zaxis[k])
+    interpolator = RegularGridInterpolator((xaxis, yaxis, zaxis), data_3d)
+
+    # Interpolate the values at the given coordinates
+    interpolated_values = interpolator(coords)
+
+    return interpolated_values
+
 print(jax.devices())
 
-#file_name = '/home/gfp/Downloads/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
-file_name = '/Users/gianmarcopinton/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
+
+file_name = '/home/gfp/Downloads/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
+#file_name = '/Users/gianmarcopinton/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
  
 with h5py.File(file_name, "r") as file:
     list_h5_data(file)
@@ -609,12 +661,12 @@ for ff in range(fcens.shape[0]):
     fcen = fcens[ff, :]
     
     # Create directory strings
-    #fstr = f'/celerina/gfp/mfs/forest/asr3_schema{ff}'
-    #fstr = fstr.replace('.', 'p').replace('-1', 'w')
-    #basedir = os.path.join('/celerina/gfp/mfs/angularspectrum_python', fstr)
-    fstr = f'asr3_schema{ff}'
+    fstr = f'/celerina/gfp/mfs/forest/asr3_schema{ff}'
     fstr = fstr.replace('.', 'p').replace('-1', 'w')
-    basedir = os.path.join('/Users/gianmarcopinton/', fstr)
+    basedir = os.path.join('/celerina/gfp/mfs/angularspectrum_python', fstr)
+    #fstr = f'asr3_schema{ff}'
+    #fstr = fstr.replace('.', 'p').replace('-1', 'w')
+    #basedir = os.path.join('/Users/gianmarcopinton/', fstr)
 
 
     # Create directories
@@ -843,6 +895,7 @@ for ff in range(fcens.shape[0]):
     pI = np.zeros((nX, nY, n_steps), dtype=np.float32)   # Intensity
     pax = np.zeros((nT, n_steps), dtype=np.float32)      # Axial pressure
     arrivaltime_matrix = np.zeros((nX, nY, n_steps), dtype=np.float32)  # Arrival time matrix
+    amplitude_mask = np.zeros((nX, nY, n_steps)).astype(np.float32)  # Amplitude mask
 
     # Initialize propagation variables
     apaz = jnp.array(apa, dtype=jnp.float32)  # Current field
@@ -855,11 +908,18 @@ for ff in range(fcens.shape[0]):
     # Main propagation loop
     start_time = time.time()
     while sum(zvec) < prop_dist:
+        # initialize to zero
+        #pI = np.zeros((nX, nY, round(prop_dist/dZ)))
+        #pnp = np.zeros((nX, nY, round(prop_dist/dZ)))
+        #ppp = np.zeros((nX, nY, round(prop_dist/dZ)))
+        #arrivaltime_matrix = np.zeros((nX, nY, round(prop_dist/dZ)))
+        #amplitude_mask = np.zeros((nX, nY, round(prop_dist/dZ))).astype(np.float32)
         # Store axial pressure (center of domain)
         pax[:, cc] = apaz[nX//2, nY//2, :]
         
         # Calculate intensity
         pI[:, :, cc] = np.sum(apaz**2, axis=2)
+        pIslice = np.sum(apaz**2, axis=2)
         
         # Store peak negative and positive pressures
         pnp[:, :, cc] = np.min(apaz, axis=2)
@@ -867,6 +927,8 @@ for ff in range(fcens.shape[0]):
         peak_idxs = np.argmax(apaz, axis=2)
         #peak_vals, peak_idxs = find_envelope_peak_3d(apaz)
         arrivaltime_matrix[:, :, cc] = taxis[peak_idxs]+cc*dZ/c0
+        #amplitude_mask[:, :, cc] = np.zeros((nX, nY))
+        amplitude_mask[:, :, cc] = np.where(np.abs(pIslice) > 0.1 * np.mean(np.mean(pIslice)), 1, 0)
 
         # Check stability criterion
         if N * dZ/dT * np.max(np.abs(apaz)) > 0.1:
@@ -902,8 +964,8 @@ for ff in range(fcens.shape[0]):
         plt.clf()  # Clear the figure
         
         # Create 8 subplots (4x2 grid)
-        for i in range(10):
-            plt.subplot(5, 2, i+1)
+        for i in range(12):
+            plt.subplot(6, 2, i+1)
             
             if i == 0:  # Pressure field in x-t plane
                 plt.imshow(apaz[:, nY//2, :].T, 
@@ -973,7 +1035,18 @@ for ff in range(fcens.shape[0]):
                 plt.ylabel('z (m)')
                 plt.title('Arrival Times')
                 plt.colorbar(label='s')
-    
+            # Add new arrival time plots
+            elif i == 10 or i == 11:  
+                plt.imshow(amplitude_mask[:, nY//2 if i == 10 else nX//2, :cc].T,  
+                        extent=[xaxis[0] if i == 10 else yaxis[0], 
+                                xaxis[-1] if i == 10 else yaxis[-1],
+                                0, current_dist],  # Added z-axis limits
+                        aspect='auto')
+                plt.xlabel('x (m)' if i == 10 else 'y (m)')
+                plt.ylabel('z (m)')
+                plt.title('Amplitude Mask')
+                plt.colorbar(label='Amplitude')
+  
     
         
         plt.tight_layout()
@@ -985,10 +1058,29 @@ for ff in range(fcens.shape[0]):
     elapsed_time = end_time - start_time
     print(f"Simulation run time: {elapsed_time:.2f} seconds")
 
+    cc=cc-1
+    z=np.cumsum(zvec[:cc])
+
     # Save final results
     np.savez(os.path.join(basedir, 'results.npz'),
             pnp=pnp[:,:,:cc], ppp=ppp[:,:,:cc],
             pI=pI[:,:,:cc], pax=pax[:,:cc],
             x=xaxis, y=yaxis, t=t, z=np.cumsum(zvec[:cc]))
 
+
     print("Simulation completed successfully.")
+
+    # define the grid
+    bmode_lats = lats  # lats[20:-20]
+    bmode_els = els  # bmode_lats
+    bmode_deps = deps  # deps[200:300]
+
+    beamforming_grid = np.ascontiguousarray(
+        np.array(
+            np.meshgrid(bmode_lats, bmode_els, bmode_deps, indexing="ij")
+        )
+        .reshape(3, -1)
+        .T
+    ).astype(np.float32)
+
+    arrivaltime_matrix_interpolated = interpolate_3d_xyz( beamforming_grid, arrivaltime_matrix, xaxis, yaxis, z)
