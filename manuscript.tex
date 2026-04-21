@@ -35,9 +35,9 @@ accurate simulation of clinical devices such as the TIPS annular
 phased array.  The nonlinear operator supports both a first-order
 Rusanov flux and a second-order Kurganov--Tadmor (KT) scheme with
 adaptive CFL sub-cycling, composed via Strang splitting.  Three
-enhanced absorbing-boundary treatments---a Wendland $C^2$ taper,
+enhanced absorbing-boundary treatments (a Wendland $C^2$ taper,
 frequency-weighted spatial damping, and a first-order Engquist--Majda
-super-absorbing correction---reduce boundary reflections by a factor
+super-absorbing correction) reduce boundary reflections by a factor
 of 2.4 relative to a standard quadratic absorber.  Validation against
 analytical solutions confirms that the propagator reproduces the
 baffled-piston far-field pattern with RMS error 0.014 and the
@@ -62,7 +62,7 @@ for treatment planning and aberration correction.  Full-wave
 finite-difference time-domain (FDTD) solvers
 \cite{pinton2009,pinton2014} provide high fidelity but demand large
 3-D grids and long run times.  The angular spectrum method (ASM)
-\cite{christopher1991,du1994,zemp2010} offers an attractive
+\cite{christopher1991,du1985,zemp2010} offers an attractive
 alternative: by decomposing the field into plane-wave components and
 applying the exact free-space propagator in wavenumber space via the
 FFT, it avoids the paraxial approximation while remaining
@@ -322,7 +322,7 @@ unless otherwise noted.
 
 The baffled-piston and focused-piston benchmarks have been used
 extensively to validate angular spectrum propagators
-\cite{christopher1991,zemp2010,du1994} and remain valuable here as
+\cite{christopher1991,zemp2010,du1985} and remain valuable here as
 verification of the present code implementation.
 
 A spherically focused piston ($a = 8\lambda$,
@@ -357,8 +357,8 @@ $(2J_1(k_0 a r/z) / k_0 a r/z)^2$ with RMS error 0.014.
   \includegraphics[width=\columnwidth]{validation_results/analytical/testC_focused_piston.png}
   \caption{Focused piston diffraction ($a = 8\lambda$,
     $F = \SI{20}{\milli\meter}$, $F\#\,\approx 3.3$).  Top:
-    on-axis amplitude versus paraxial solution (left; RMS 0.089)
-    and focal-plane lateral profile versus Airy pattern (right;
+    on-axis amplitude versus paraxial solution (left, RMS 0.089)
+    and focal-plane lateral profile versus Airy pattern (right,
     RMS 0.002).  Bottom: $x$--$z$ and $y$--$z$ time-integrated
     intensity.}
   \label{fig:focused_piston}
@@ -438,7 +438,7 @@ both schemes capturing the correct shock speed (\cref{fig:riemann}).
 The three boundary improvements were evaluated using apertures wide
 enough to drive significant energy toward the domain edges.
 \Cref{tab:bdy_reflection} shows the boundary-to-center intensity
-ratio for progressively adding each improvement; the combined
+ratio for progressively adding each improvement. The combined
 configuration reduces reflections by $2.4\times$ relative to the
 quadratic baseline.  A frequency-resolved comparison confirmed that
 the frequency-weighted damping preferentially targets low-frequency
@@ -471,7 +471,7 @@ harmonic spectrum to within $<\!1$\,dB
   \includegraphics[width=0.95\columnwidth]{validation_results/boundaries/test5_combined_profiles.png}
   \caption{Combined boundary with nonlinear propagation: final
     waveform (left) and spectrum (right) for four boundary
-    configurations.  The interior waveform is invariant; harmonic
+    configurations.  The interior waveform is invariant and harmonic
     levels match to $<\!1$\,dB.}
   \label{fig:bdy5_profiles}
 \end{figure}
@@ -484,7 +484,7 @@ A pairwise convergence study in the strongly nonlinear regime
 propagation) compared the $\Delta z$-vs-$\Delta z/2$ error for
 sequential Rusanov, Strang+Rusanov, and Strang+KT
 (\cref{fig:test6}).  Sequential and split-Rusanov converge at rate
-$\approx 1$; Strang+KT converges at rate $\approx 2$, consistent
+$\approx 1$, while Strang+KT converges at rate $\approx 2$, consistent
 with the expected second-order Strang splitting accuracy.
 
 \begin{figure}[t]
@@ -729,7 +729,7 @@ peak intensity so the beam shapes can be compared directly.
 The ASM focuses at $z = \SI{52.7}{\milli\meter}$, within 2.3\% of
 the FDTD focal depth at \SI{53.9}{\milli\meter}.
 The on-axis, lateral, and elevational beam profiles match well in
-shape; the remaining differences are concentrated in the pre-focal
+shape. The remaining differences are concentrated in the pre-focal
 near-field where the annular aperture geometry produces
 resolution-dependent interference fringes.
 The FDTD drives the bowl surface with three voxel layers extruded
@@ -738,7 +738,7 @@ $z$-slice.  To match the FDTD source coupling, the ASM source amplitude is scale
 by a calibration factor of 1.31.  This factor accounts for the
 coherent array factor of the three-layer volumetric source at the FDTD
 grid spacing ($k \Delta x \approx 0.79$\,rad, CFL $= 0.2$) and is
-specific to this FDTD configuration; it would need to be recalibrated
+specific to this FDTD configuration and would need to be recalibrated
 for a different number of layers or grid resolution.  After
 calibration, both methods produce a focal peak pressure of
 \SI{13.8}{\mega\pascal}.
@@ -751,7 +751,7 @@ material maps), totaling roughly \SI{15}{\giga\byte}.  The ASM
 stores only the current 2-D-plus-time field
 ($365 \times 365 \times 425 \approx \SI{57}{M}$ points) together with
 precomputed frequency-domain operators of the same shape, for a total
-of approximately \SI{1.6}{\giga\byte}---a factor of nine reduction.
+of approximately \SI{1.6}{\giga\byte}, a factor of nine reduction.
 For the present benchmark the FDTD completes in \SI{1477}{\second}
 (multi-GPU) while the ASM requires \SI{516}{\second} (single GPU),
 a $2.9\times$ speed-up despite using only one GPU.  The ASM wall time
@@ -832,7 +832,7 @@ differently from the ASM's single-layer planar injection, requiring an
 empirical amplitude calibration factor (here 1.31) that depends on the
 FDTD grid spacing and number of source layers.  The super-absorbing
 boundary uses a first-order Engquist--Majda decomposition, which is
-exact only for normally-incident waves; a higher-order formulation
+exact only for normally-incident waves. A higher-order formulation
 \cite{higdon1986} could improve performance for wide-angle beams.
 Finally, although the Strang+KT splitting achieves second-order
 convergence when the nonlinear operator is tested in isolation, the
@@ -854,7 +854,7 @@ loss into the FFT-based propagator, matching an FDTD reference to
 insertion loss of \SI{5.4}{\deci\bel}, consistent with measured
 values.  Plane-by-plane source injection enables accurate modeling of
 spherical-bowl transducers whose curvature depth exceeds the
-wavelength; for a clinical TIPS annular array, the method matches the
+wavelength. For a clinical TIPS annular array, the method matches the
 FDTD focal depth to within 2.3\% while requiring $9\times$ less
 memory and $2.9\times$ less wall time.
 
@@ -874,6 +874,10 @@ geometries, at computational costs that are compatible with treatment
 planning and real-time aberration correction workflows.
 
 % ------------------------------------------------------------------
+The source code is available at
+\url{https://github.com/gfpinton/angularspectrum_python} under the
+LGPL v3 license.
+
 \begin{thebibliography}{20}
 
 \bibitem{christopher1991}
@@ -881,10 +885,10 @@ P.~T. Christopher and K.~J. Parker,
 ``New approaches to nonlinear diffractive field propagation,''
 \textit{J.\ Acoust.\ Soc.\ Am.}, vol.~90, no.~1, pp.~488--499, 1991.
 
-\bibitem{du1994}
+\bibitem{du1985}
 G.~Du and M.~A. Breazeale,
 ``The ultrasonic field of a Gaussian transducer,''
-\textit{J.\ Acoust.\ Soc.\ Am.}, vol.~96, no.~5, pp.~2866--2874, 1994.
+\textit{J.\ Acoust.\ Soc.\ Am.}, vol.~78, no.~6, pp.~2083--2086, 1985.
 
 \bibitem{engquist1977}
 B.~Engquist and A.~Majda,
@@ -896,15 +900,9 @@ S.~Gottlieb, C.-W. Shu, and E.~Tadmor,
 ``Strong stability-preserving high-order time discretization methods,''
 \textit{SIAM Rev.}, vol.~43, no.~1, pp.~89--112, 2001.
 
-\bibitem{guasch2020}
-L.~Guasch, O.~C. Agudo, M.-X. Tang, P.~Nachev, and M.~Warner,
-``Full-waveform inversion imaging of the human brain,''
-\textit{npj Digit.\ Med.}, vol.~3, art.~28, 2020.
-
 \bibitem{halle_skull}
-M.~Pham, Y.~Huang, and Y.~Bhatt,
-``Halle skull microCT dataset,'' Zenodo, 2022.
-\url{https://doi.org/10.5281/zenodo.6956658}
+``Halle skull microCT dataset,'' Zenodo, 2022,
+doi: 10.5281/zenodo.6956658.
 
 \bibitem{higdon1986}
 R.~L. Higdon,
@@ -914,8 +912,8 @@ multi-dimensional wave equation,''
 
 \bibitem{jax2018}
 J.~Bradbury \textit{et~al.},
-``JAX: composable transformations of Python+NumPy programs,'' 2018.
-\url{http://github.com/google/jax}
+``JAX: composable transformations of Python+NumPy programs,''
+2018. [Online]. Available: \url{http://github.com/google/jax}
 
 \bibitem{kinsler2000}
 L.~E. Kinsler, A.~R. Frey, A.~B. Coppens, and J.~V. Sanders,
@@ -939,7 +937,7 @@ propagation in 3-D random media,''
 \textit{Appl.\ Opt.}, vol.~27, no.~11, pp.~2111--2126, 1988.
 
 \bibitem{pinton2012}
-G.~F. Pinton, J.-F. Aubry, E.~Bossy, M.~Muber, and M.~Tanter,
+G.~F. Pinton, J.-F. Aubry, E.~Bossy, M.~Muller, M.~Pernot, and M.~Tanter,
 ``Attenuation, scattering, and absorption of ultrasound in the skull bone,''
 \textit{Med.\ Phys.}, vol.~39, no.~1, pp.~299--307, 2012.
 
@@ -949,19 +947,15 @@ W.~L. Nyborg,
 \textit{J.\ Acoust.\ Soc.\ Am.}, vol.~70, no.~2, pp.~310--312, 1981.
 
 \bibitem{pinton2014}
-G.~F. Pinton, J.~Dahl, and G.~E. Trahey,
-``Software and techniques for three-dimensional full-wave nonlinear
-acoustic simulations,'' unpublished Fullwave implementation, 2014--2026.
+G.~F. Pinton,
+``Numerical methods for nonlinear wave propagation in ultrasound,''
+Ph.D.\ dissertation, Dept.\ Biomed.\ Eng., Duke Univ., Durham, NC, 2007.
 
 \bibitem{pinton2009}
 G.~F. Pinton, J.~Dahl, S.~Rosenzweig, and G.~E. Trahey,
 ``A heterogeneous nonlinear attenuating full-wave model of ultrasound,''
 \textit{IEEE Trans.\ Ultrason., Ferroelect., Freq.\ Control},
 vol.~56, no.~3, pp.~474--488, 2009.
-
-\bibitem{pinton2017}
-G.~F. Pinton,
-``Angular spectrum method code,'' unpublished MATLAB implementation, 2017.
 
 \bibitem{rusanov1962}
 V.~V. Rusanov,
@@ -1001,7 +995,7 @@ K.~R. Waters, J.~Mobley, and J.~G. Miller,
 ``Causality-imposed (Kramers--Kronig) relationships between
 attenuation and dispersion,''
 \textit{IEEE Trans.\ Ultrason., Ferroelect., Freq.\ Control},
-vol.~52, no.~5, pp.~822--823, 2005.
+vol.~52, no.~5, pp.~822--833, 2005.
 
 \bibitem{wendland1995}
 H.~Wendland,
