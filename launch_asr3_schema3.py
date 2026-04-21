@@ -67,6 +67,55 @@ def simulate_propagation(apa, prop_dist, dZ, dT, N, HH, abl, afilt3d, basedir,
 
     return pnp, ppp, pI, pax
 
+def precalculate_ad_pow2(alpha0: float, nX: int, nY: int, nT: int, dZ: float, dT: float, 
+                          c0: float, f0: float, pow: float) -> tuple:
+    """
+    Calculates attenuation and dispersion filters for wave propagation using a power law.
+    
+    Parameters:
+        alpha0: Base attenuation coefficient.
+        nX, nY: Spatial grid dimensions.
+        nT: Number of time points.
+        dZ: Spatial step size in propagation direction.
+        dT: Time step size.
+        c0: Reference sound speed.
+        f0: Reference frequency.
+        pow: Power law exponent for frequency dependence.
+        
+    Returns:
+        afilt3d: 3D complex array containing the attenuation-dispersion filter.
+        f: Frequency array.
+        attenuation: Attenuation coefficient (Np/m).
+        dispersion: Frequency-dependent wave speed (m/s).
+    """
+    print("Gianmarco Pinton, written on 2017-05-25")
+    print("Precalculating attenuation/dispersion filter with power law...")
+    
+    # Calculate frequency axis (avoid zero frequency)
+    f = np.fft.rfftfreq(nT, dT)
+    f[0] = f[1] / 2
+
+    # Unit conversion for attenuation and compute frequency-dependent attenuation
+    alphaUnitConv = alpha0 / (1e6**pow) * 1e2 / (20 * np.log10(np.e))
+    alpha = alphaUnitConv * f**pow
+
+    # Compute dispersion term based on whether the exponent is odd or even
+    if pow % 2 == 1:
+        alphaStar0 = -2 * alphaUnitConv / ((2 * np.pi)**pow * np.pi) * (np.log(2 * np.pi * f) - np.log(2 * np.pi * f0))
+    else:
+        alphaStar0 = (alphaUnitConv / ((2 * np.pi)**pow) * np.tan(np.pi * pow / 2) *
+                      ((2 * np.pi * f)**(pow - 1) - (2 * np.pi * f0)**(pow - 1)))
+    alphaStar = 2 * np.pi * alphaStar0 * f
+    dispersion = 1 / ((1 / c0) + (alphaStar / (2 * np.pi * f)))
+    
+    # Create the complex attenuation-dispersion filter and broadcast to 3D
+    afilt = np.exp((-alpha - 1j * alphaStar) * dZ)
+    n_freq = nT // 2 + 1
+    afilt3d = np.broadcast_to(afilt[None, None, :n_freq], (nX, nY, n_freq))
+    
+    print("done.")
+    return afilt3d, f, alpha, dispersion
+
 def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0):
     """Calculate the modified angular spectrum for wave propagation."""
     print("Gianmarco Pinton, written on 2017-05-25")
@@ -162,18 +211,43 @@ def _get_raw_metadata(file: h5py.File) -> tuple:
     return file["data"][:], fs, fc, lats, els, deps, theta, phi, c0, time_offset, transmit_delays_s, transmit_element_mask
 
 def list_h5_data(file: h5py.File):
-    """Recursively lists all datasets in an HDF5 file with their properties."""
+    """
+    Recursively lists all data in an HDF5 file.
     
+    Prints:
+        - Dataset path.
+        - Value and data type if scalar.
+        - Shape, dimensions, and data type if array.
+    """
     def traverse(group, path=""):
-        for key, item in group.items():
+        for key in group:
             item_path = f"{path}/{key}"
-            print(f"{'Group' if isinstance(item, h5py.Group) else 'Dataset'}: {item_path}")
+            item = group[key]
             if isinstance(item, h5py.Dataset):
-                print(f"  {'Value: ' + str(item[()]) if item.shape == () else f'Shape: {item.shape}, Dimensions: {len(item.shape)}, Data Type: {item.dtype}'}")
-            else:
+                print(f"Dataset: {item_path}")
+                if item.shape == ():
+                    # Scalar data
+                    print(f"  Value: {item[()]}")
+                    print(f"  Data Type: {item.dtype}")
+                else:
+                    # Array data
+                    print(f"  Shape: {item.shape}")
+                    print(f"  Dimensions: {len(item.shape)}")
+                    print(f"  Data Type: {item.dtype}")
+            elif isinstance(item, h5py.Group):
+                print(f"Group: {item_path}")
                 traverse(item, item_path)
-
+            else:
+                # For any other type (e.g., h5py.Datatype), skip or print a message.
+                print(f"Skipping {item_path} (type {type(item)})")
+    
     traverse(file)
+def apply_hann_window(ap, fwhm_x=None, fwhm_y=None):
+    """Apply a symmetric Hann window to an aperture with optional FWHM scaling."""
+    ap_windowed = ap.copy()
+    if fwhm_x: ap_windowed *= np.power(np.hanning(ap.shape[0])[:, None], 1/fwhm_x)
+    if fwhm_y: ap_windowed *= np.power(np.hanning(ap.shape[1]), 1/fwhm_y)
+    return ap_windowed
 
 def create_aperture_mask(nX, nY, xaxis, yaxis, wX, wY, fwhm_x=1, fwhm_y=1):
     """Create a rectangular aperture mask (with Hann windowing) for the given grid.
@@ -268,78 +342,136 @@ def generate_space_time_field(ap, t, tt, omega0, ncycles, dur, p0):
             * np.sin(omega0 * (t_grid - tt_grid)) * p0
     return ap[..., None] * field
 
+
 def plot_propagation_step(apaz, pI, pnp, pax, arrivaltime_matrix, amplitude_mask,
-                          xaxis, yaxis, t, zvec, current_dist, cc,
+                          xaxis, yaxis, t, zaxis, current_dist, cc,
                           dT, c0, pdur, f0, rho0, save_path):
-    """Create a multi-panel plot for a propagation step and save the figure."""
+    """
+    Create a multi-panel plot for a propagation step and save the figure.
+    
+    Modifications:
+      - For propagation-dependent plots (subplots 4–11) the entire z-axis is used.
+      - The vertical axis (z) is static and flipped (z = 0 at the top) using the input zaxis.
+      - The correct aspect ratios are preserved based on the axis units.
+    
+    Parameters:
+      zaxis : 1D numpy array
+          The propagation distance axis (e.g. np.arange(n_steps)*dZ).
+      current_dist : float
+          Current propagation distance (for plot titles).
+      cc : int
+          The current index (for non-propagation plots).
+      (Other parameters are as before.)
+    """
     plt.clf()
-    # Create 12 subplots arranged in a 6x2 grid
+    plt.figure(figsize=(24, 30))
+    
+    # Define static vertical (z) limits from the provided zaxis.
+    # zaxis[0] is 0 and zaxis[-1] is the maximum propagation distance.
+    z_top = zaxis[0]          # should be 0
+    z_bottom = zaxis[-1]      # maximum z value
+    
     for i in range(12):
-        plt.subplot(6, 2, i + 1)
+        ax = plt.subplot(6, 2, i + 1)
         if i == 0:  # x-t pressure field
-            plt.imshow(apaz[:, len(yaxis)//2, :].T,
-                       extent=[xaxis[0], xaxis[-1], t[0], t[-1]], aspect='auto')
-            plt.xlabel('x (m)'); plt.ylabel('t (s)')
-            plt.title(f'Pressure field at z = {current_dist:.3f} m')
-            plt.colorbar(label='Pa')
+            im = ax.imshow(apaz[:, len(yaxis)//2, :].T,
+                           extent=[xaxis[0], xaxis[-1], t[0], t[-1]],
+                           aspect='auto')
+            ax.set_xlabel('x (m)')
+            ax.set_ylabel('t (s)')
+            ax.set_title(f'Pressure field at z = {current_dist:.3f} m')
+            plt.colorbar(im, ax=ax, label='Pa')
         elif i == 1:  # y-t pressure field
-            plt.imshow(apaz[len(xaxis)//2, :, :].T,
-                       extent=[yaxis[0], yaxis[-1], t[0], t[-1]], aspect='auto')
-            plt.xlabel('y (m)'); plt.ylabel('t (s)')
-            plt.title(f'Pressure field at z = {current_dist:.3f} m')
-            plt.colorbar(label='Pa')
+            im = ax.imshow(apaz[len(xaxis)//2, :, :].T,
+                           extent=[yaxis[0], yaxis[-1], t[0], t[-1]],
+                           aspect='auto')
+            ax.set_xlabel('y (m)')
+            ax.set_ylabel('t (s)')
+            ax.set_title(f'Pressure field at z = {current_dist:.3f} m')
+            plt.colorbar(im, ax=ax, label='Pa')
         elif i == 2:  # time trace at center
-            plt.plot(t, apaz[len(xaxis)//2, len(yaxis)//2, :])
-            plt.xlabel('t (s)'); plt.ylabel('Pa')
-            plt.title(f'Center pressure at z = {current_dist:.3f} m')
-            plt.grid(True)
-        elif i == 3:  # 2D intensity map
-            isppa = pI[:, :, cc] * dT / (c0 * rho0 * pdur) / 10000
-            plt.imshow(isppa.T, extent=[xaxis[0], xaxis[-1], yaxis[0], yaxis[-1]], aspect='equal')
-            plt.xlabel('x (m)'); plt.ylabel('y (m)')
-            plt.title('Isppa (W/cm²)')
-            plt.colorbar(label='W/cm²')
+            ax.plot(t, apaz[len(xaxis)//2, len(yaxis)//2, :])
+            ax.set_xlabel('t (s)')
+            ax.set_ylabel('Pa')
+            ax.set_title(f'Center pressure at z = {current_dist:.3f} m')
+            ax.grid(True)
+        elif i == 3:  # 2D intensity map in x-y plane (from the final z index)
+            isppa = pI[:, :, -1] * dT / (c0 * rho0 * pdur) / 10000
+            im = ax.imshow(isppa.T,
+                           extent=[xaxis[0], xaxis[-1], yaxis[0], yaxis[-1]],
+                           aspect='equal')
+            ax.set_xlabel('x (m)')
+            ax.set_ylabel('y (m)')
+            ax.set_title('Isppa (W/cm²)')
+            plt.colorbar(im, ax=ax, label='W/cm²')
         elif i in [4, 5]:
-            data = pI[:, len(yaxis)//2 if i == 4 else len(xaxis)//2, :cc] * dT / (c0 * rho0 * pdur) / 10000
-            plt.imshow(data.T, extent=[xaxis[0] if i == 4 else yaxis[0],
-                                        xaxis[-1] if i == 4 else yaxis[-1],
-                                        0, current_dist], aspect='equal')
-            plt.xlabel('x (m)' if i == 4 else 'y (m)')
-            plt.ylabel('z (m)')
-            plt.title('Isppa (W/cm²)')
-            plt.colorbar(label='W/cm²')
+            # Intensity profiles along a fixed cross-section over the entire z-axis.
+            if i == 4:
+                data = pI[:, len(yaxis)//2, :] * dT / (c0 * rho0 * pdur) / 10000
+                x_or_y, xlabel = xaxis, 'x (m)'
+            else:
+                data = pI[len(xaxis)//2, :, :] * dT / (c0 * rho0 * pdur) / 10000
+                x_or_y, xlabel = yaxis, 'y (m)'
+            im = ax.imshow(data.T,
+                           extent=[x_or_y[0], x_or_y[-1], z_bottom, z_top],
+                           aspect='auto')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('z (m)')
+            ax.set_title('Isppa (W/cm²)')
+            ax.set_ylim(z_bottom, z_top)  # static, flipped z-axis
+            plt.colorbar(im, ax=ax, label='W/cm²')
         elif i in [6, 7]:
-            mi_data = -pnp[:, len(yaxis)//2 if i == 6 else len(xaxis)//2, :cc] / 1e6 / np.sqrt(f0/1e6)
-            plt.imshow(mi_data.T, extent=[xaxis[0] if i == 6 else yaxis[0],
-                                           xaxis[-1] if i == 6 else yaxis[-1],
-                                           0, current_dist], aspect='equal')
-            plt.xlabel('x (m)' if i == 6 else 'y (m)')
-            plt.ylabel('z (m)')
-            plt.title('MI')
-            plt.colorbar(label='MI')
+            # MI profiles over the entire z-axis.
+            if i == 6:
+                mi_data = -pnp[:, len(yaxis)//2, :] / 1e6 / np.sqrt(f0/1e6)
+                x_or_y, xlabel = xaxis, 'x (m)'
+            else:
+                mi_data = -pnp[len(xaxis)//2, :, :] / 1e6 / np.sqrt(f0/1e6)
+                x_or_y, xlabel = yaxis, 'y (m)'
+            im = ax.imshow(mi_data.T,
+                           extent=[x_or_y[0], x_or_y[-1], z_bottom, z_top],
+                           aspect='auto')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('z (m)')
+            ax.set_title('MI')
+            ax.set_ylim(z_bottom, z_top)
+            plt.colorbar(im, ax=ax, label='MI')
         elif i in [8, 9]:
-            plt.imshow(arrivaltime_matrix[:, len(yaxis)//2 if i == 8 else len(xaxis)//2, :cc].T,
-                       extent=[xaxis[0] if i == 8 else yaxis[0],
-                               xaxis[-1] if i == 8 else yaxis[-1],
-                               0, current_dist], aspect='auto')
-            plt.xlabel('x (m)' if i == 8 else 'y (m)')
-            plt.ylabel('z (m)')
-            plt.title('Arrival Times')
-            plt.colorbar(label='s')
+            # Arrival time profiles over the entire z-axis.
+            if i == 8:
+                data = arrivaltime_matrix[:, len(yaxis)//2, :]
+                x_or_y, xlabel = xaxis, 'x (m)'
+            else:
+                data = arrivaltime_matrix[len(xaxis)//2, :, :]
+                x_or_y, xlabel = yaxis, 'y (m)'
+            im = ax.imshow(data.T,
+                           extent=[x_or_y[0], x_or_y[-1], z_bottom, z_top],
+                           aspect='auto')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('z (m)')
+            ax.set_title('Arrival Times')
+            ax.set_ylim(z_bottom, z_top)
+            plt.colorbar(im, ax=ax, label='s')
         elif i in [10, 11]:
-            plt.imshow(amplitude_mask[:, len(yaxis)//2 if i == 10 else len(xaxis)//2, :cc].T,
-                       extent=[xaxis[0] if i == 10 else yaxis[0],
-                               xaxis[-1] if i == 10 else yaxis[-1],
-                               0, current_dist], aspect='auto')
-            plt.xlabel('x (m)' if i == 10 else 'y (m)')
-            plt.ylabel('z (m)')
-            plt.title('Amplitude Mask')
-            plt.colorbar(label='Amplitude')
+            # Amplitude mask profiles over the entire z-axis.
+            if i == 10:
+                data = amplitude_mask[:, len(yaxis)//2, :]
+                x_or_y, xlabel = xaxis, 'x (m)'
+            else:
+                data = amplitude_mask[len(xaxis)//2, :, :]
+                x_or_y, xlabel = yaxis, 'y (m)'
+            im = ax.imshow(data.T,
+                           extent=[x_or_y[0], x_or_y[-1], z_bottom, z_top],
+                           aspect='auto')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('z (m)')
+            ax.set_title('Amplitude Mask')
+            ax.set_ylim(z_bottom, z_top)
+            plt.colorbar(im, ax=ax, label='Amplitude')
     plt.tight_layout()
     plt.savefig(save_path, dpi=200)
 
 # --- Main Simulation ---
-
 def main():
     print("JAX devices:", jax.devices())
     
@@ -479,7 +611,8 @@ def main():
         pax = np.zeros((nT, n_steps), dtype=np.float32)
         arrivaltime_matrix = np.zeros((nX, nY, n_steps), dtype=np.float32)
         amplitude_mask = np.zeros((nX, nY, n_steps), dtype=np.float32)
-    
+        zaxis = np.arange(n_steps) * dZ
+
         # --- Propagation Loop ---
         apaz = jnp.array(apa, dtype=jnp.float32)
         zvec = [0]
@@ -502,6 +635,8 @@ def main():
             if N * dZ / dT * np.max(np.abs(apaz)) > 0.1:
                 print('Stability criterion violated, retrying with smaller step size')
                 dZ = 0.075 * dT / (np.max(np.abs(apaz)) * N)
+                n_steps = int(np.ceil(prop_dist / dZ))
+                zaxis = np.arange(n_steps) * dZ
                 cc = 0
                 zvec = [0]
                 HH = precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0).astype(np.complex64)
@@ -524,7 +659,7 @@ def main():
             # Plot and save the propagation state.
             plot_path = os.path.join(fig_dir, f'agp_{cc:04d}.jpg')
             plot_propagation_step(apaz, pI, pnp, pax, arrivaltime_matrix, amplitude_mask,
-                                  xaxis, yaxis, t, zvec, current_dist, cc,
+                                  xaxis, yaxis, t, zaxis, current_dist, cc,
                                   dT, c0, pdur, f0, rho0, plot_path)
             zvec.append(dZ)
             cc += 1

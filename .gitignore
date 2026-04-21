@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE / tools
+.vscode/
+.idea/
+.codex/
+.codex
+*.swp
+*.swo
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# Standalone plots (not in validation_results/)
+/*.png
+
+# Generated PDF
+manuscript.pdf
+
+# Large data files
+*.npz
+*.npy
+*.dat
+*.h5
+*.mat
+*.nrrd
+
+# FDTD working directories
+validation_results/bowl/txrx_0/
+validation_results/transcranial/txrx_0/
+
+# Keep validation figure PNGs (override *.npz exclusion)
+!validation_results/**/*.png

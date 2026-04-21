@@ -376,7 +376,7 @@ def precalculate_abl(nX: int, nY: int, nT: int, boundary_factor: float = 0.2) ->
     print('done.')
     return abl
 
-def _get_raw_metadata(file: h5py.File) -> tuple:
+def get_raw_metadata(file: h5py.File) -> tuple:
     """Get the metadata from a raw file.
     Args:
         file: The data file.
@@ -536,14 +536,14 @@ def apply_hann_window(ap, fwhm_x=None, fwhm_y=None):
 print(jax.devices())
 
 file_name = '/home/gfp/Downloads/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
- 
+file_name = '/celerina/gfp/mfs/mangrove-test-data/phantom/ATS539_brights_rf.h5'
+
 with h5py.File(file_name, "r") as file:
     list_h5_data(file)
 
 with h5py.File(file_name, 'r') as file:
     rf, fs, f0, lats, els, deps, theta, phi, c0, time_offset, transmit_delays_s, transmit_element_mask = \
-        _get_raw_metadata(file)
-
+        get_raw_metadata(file)
 
 # remove the mean from the transmit delays
 transmit_delays_s_zeromean = np.zeros_like(transmit_delays_s)
@@ -570,9 +570,8 @@ for i in range(transmit_delays_s_zeromean.shape[0]):
 #    plt.tight_layout()
 #    plt.show()
 
-pdb.set_trace() 
-# interpolate transmit_delays_s_zeromean to the same size as the data
 
+# interpolate transmit_delays_s_zeromean to the same size as the data
 
 # Basic physical parameters
 f0 = 3e6  # Frequency in Hz
@@ -593,7 +592,7 @@ omega0 = f0 * 2 * np.pi
 # Array parameters
 wYsubs = np.array([8, 16, 32, 64]) * array_dx
 wYsub = 64 * array_dx
-focs = np.arange(1, 8) * 1e-2  # Changed MATLAB 1:7 to Python equivalent
+focs = np.arange(1, 8) * 1e-2  
 focs = 1e-2
 p0 = 0.03e6
 a0 = 0.5  # -1 indicates water
@@ -683,6 +682,35 @@ for ff in range(fcens.shape[0]):
     print(f"Interpolated shape: {delays_interpolated.shape}")
     print(f"New grid dimensions (nX, nY): ({nX}, {nY})")
    
+    # Create coordinate grids and initialize array as before
+    mask_interpolated = np.zeros((transmit_element_mask.shape[0], len(new_x), len(new_y)), dtype=bool)
+
+    # Interpolate each slice
+    for i in range(transmit_element_mask.shape[0]):
+        # Create 2D grid for interpolation
+        orig_X, orig_Y = np.meshgrid(orig_x, orig_y, indexing='ij')
+        
+        # Get points and their values (no need to check for NaNs since it's a boolean mask)
+        points = np.column_stack((orig_X.ravel(), orig_Y.ravel()))
+        values = transmit_element_mask[i].ravel()
+        
+        # Use nearest neighbor interpolation to maintain binary values
+        interpolator = interpolate.NearestNDInterpolator(points, values)
+        
+        # Create new coordinate grid for evaluation
+        new_X, new_Y = np.meshgrid(new_x, new_y, indexing='ij')
+        
+        # Perform interpolation
+        mask_interpolated[i] = interpolator(new_X, new_Y)
+
+    # Verify the interpolation
+    print(f"Original mask shape: {transmit_element_mask.shape}")
+    print(f"Interpolated mask shape: {mask_interpolated.shape}")
+    print(f"New grid dimensions (nX, nY): ({nX}, {nY})")
+
+    # Optional: Check that we maintained binary values
+    print(f"Unique values in interpolated mask: {np.unique(mask_interpolated)}")
+
 
     # Generate initial conditions
     ncycles = 1.5
@@ -720,7 +748,7 @@ for ff in range(fcens.shape[0]):
             if abs(xaxis[i]) <= wX/2 and abs(yaxis[j]) <= wY/2:
                 ap[i, j] = 1
    
-    ap = apply_hann_window(ap, fwhm_x=0.5, fwhm_y=0.5)
+    #ap = apply_hann_window(ap, fwhm_x=0.5, fwhm_y=0.5)
    
     for i in range(nX):
         for j in range(nY):

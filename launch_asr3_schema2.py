@@ -15,6 +15,16 @@ from scipy.interpolate import RegularGridInterpolator
 
 from pathlib import Path
 from scipy.signal import hilbert
+
+import sys
+
+# Correctly add the path to the beamforming3d_forest folder
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'beamforming3d_forest')))
+#In interactive mode, manually specify the path to the target directory with 
+#sys.path.append(os.path.abspath('../beamforming3d_forest'))
+# Now you can import the functions
+from beamform import iq_beamform, rf_beamform
+
 # Enable double precision for JAX
 jax.config.update("jax_enable_x64", True)
 
@@ -583,13 +593,48 @@ def interpolate_3d_xyz(coords, data_3d, xaxis, yaxis, zaxis):
     interpolated_values = interpolator(coords)
 
     return interpolated_values
+def compute_arrive_time(
+    lats: np.ndarray,
+    els: np.ndarray,
+    deps: np.ndarray,
+    idt0: float,
+    theta: float,
+    phi: float,
+    dt: float,
+    c0: float
+) -> np.ndarray:
+    """
+    Calculate the arrival time matrix.
 
+    Parameters:
+    - lats (np.ndarray): Array of latitudes with shape (nlat,).
+    - els (np.ndarray): Array of elevations with shape (nel,).
+    - deps (np.ndarray): Array of depths with shape (ndep,).
+    - idt0 (float): Base arrival time.
+    - theta (float): Angle theta in radians.
+    - phi (float): Angle phi in radians.
+    - dt (float): Time step.
+    - c0 (float): Wave speed constant.
+
+    Returns:
+    - idt_matrix (np.ndarray): Flattened array of calculated arrival times with shape (nlat * nel * ndep,).
+    """
+    return idt0 + (
+        lats[:, None, None] * np.sin(theta) * np.cos(phi) +
+        els[None, :, None] * np.sin(theta) * np.sin(phi) +
+        deps[None, None] * np.cos(theta)
+    ) / (dt * c0)
+
+
+######################################################################
+#######################################################################
 print(jax.devices())
 
 
 file_name = '/home/gfp/Downloads/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
 #file_name = '/Users/gianmarcopinton/seq-0-IQ_3D_1cmto6cm_centered_Depth_5MHz_3a/schema/ensemble_2024-12-12T00-20-34-651724.h5'
- 
+file_name = '/celerina/gfp/mfs/mangrove-test-data/phantom/ATS539_brights_rf.h5'
+
 with h5py.File(file_name, "r") as file:
     list_h5_data(file)
 
@@ -777,7 +822,7 @@ for ff in range(fcens.shape[0]):
             if abs(xaxis[i]) <= wX/2 and abs(yaxis[j]) <= wY/2:
                 ap[i, j] = 1
    
-    ap = apply_hann_window(ap, fwhm_x=0.5, fwhm_y=0.5)
+    #ap = apply_hann_window(ap, fwhm_x=0.5, fwhm_y=0.5)
    
     for i in range(nX):
         for j in range(nY):
@@ -889,7 +934,7 @@ for ff in range(fcens.shape[0]):
     afilt3d = jnp.array(afilt3d*0+1, dtype=jnp.complex64)
 
     # Initialize arrays to store propagation results
-    n_steps = int(np.ceil(prop_dist/dZ))
+    n_steps = int(np.ceil(prop_dist/dZ))+1
     pnp = np.zeros((nX, nY, n_steps), dtype=np.float32)  # Peak negative pressure
     ppp = np.zeros((nX, nY, n_steps), dtype=np.float32)  # Peak positive pressure
     pI = np.zeros((nX, nY, n_steps), dtype=np.float32)   # Intensity
@@ -1058,7 +1103,7 @@ for ff in range(fcens.shape[0]):
     elapsed_time = end_time - start_time
     print(f"Simulation run time: {elapsed_time:.2f} seconds")
 
-    cc=cc-1
+    cc=cc
     z=np.cumsum(zvec[:cc])
 
     # Save final results
@@ -1082,5 +1127,113 @@ for ff in range(fcens.shape[0]):
         .reshape(3, -1)
         .T
     ).astype(np.float32)
+    
+    arrivaltime_matrix=arrivaltime_matrix*fs
 
     arrivaltime_matrix_interpolated = interpolate_3d_xyz( beamforming_grid, arrivaltime_matrix, xaxis, yaxis, z)
+    arrivaltime_matrix_interpolated = arrivaltime_matrix_interpolated.reshape(len(bmode_lats), len(bmode_els), len(bmode_deps)) 
+    #arrivaltime_matrix_interpolated = arrivaltime_matrix_interpolated+idt0
+
+    # compare to analytical function
+    idt0 = -fs * time_offset
+    idt_matrix = compute_arrive_time(lats, els, deps,
+                                     idt0, theta, phi, 1 / fs, c0)
+    #idt_matrix=idt_matrix.flatten()
+    j=20 #for i in range(arrivaltime_matrix_interpolated.shape[2]):
+    plt.figure(figsize=(10, 5))
+    plt.subplot(1, 2, 1)
+    plt.imshow(arrivaltime_matrix_interpolated[:, j, :].T, aspect='auto')
+    plt.colorbar(label='Arrival Time')
+    plt.title(f'Simulated Arrival Time - Slice {j + 1}')
+    plt.xlabel('X')
+    plt.ylabel('Z')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(idt_matrix[:, j, :].T, aspect='auto')
+    plt.colorbar(label='Arrival Time')
+    plt.title(f'Analytical Arrival Time - Slice {j + 1}')
+    plt.xlabel('X')
+    plt.ylabel('Z')
+
+    plt.tight_layout()
+    plt.show()
+
+    i=20
+    plt.figure(figsize=(10, 5))
+    plt.subplot(1, 2, 1)
+    plt.imshow(arrivaltime_matrix_interpolated[i, :, :].T, aspect='auto')
+    plt.colorbar(label='Arrival Time')
+    plt.title(f'Simulated Arrival Time - Slice {i + 1}')
+    plt.xlabel('X')
+    plt.ylabel('Z')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(idt_matrix[i, :, :].T, aspect='auto')
+    plt.colorbar(label='Arrival Time')
+    plt.title(f'Analytical Arrival Time - Slice {i + 1}')
+    plt.xlabel('X')
+    plt.ylabel('Z')
+
+    plt.tight_layout()
+    plt.show()
+
+    fnumber = 1.0
+    interp_type = 2  # 0: nearest neighbor, 1: linear interpolation, 2: quadratic interpolation
+    apod_flag = 1  # apodization function enabled
+    alpha = 0
+    time_decim = 1
+    test_iq = True
+    test_rf = True
+
+    kwargs = {
+        'idps_dim0': 32,
+        'idps_dim1': 16,
+        'idps_dim2': 1,
+        'idps_n0': 2,
+        'idps_n1': 18,
+        'bf_dim0': 16,
+        'bf_dim1': 16,
+        'bf_dim2': 4,
+        'bf_n0': 4
+    }
+
+
+
+    # rf = np.tile(rf.T, 200).T
+    print(f"Size of rf: {rf.shape}")
+    print(f"Data type of rf: {rf.dtype}")
+    n_frames, n_parameters, n_elements_y, n_elements_x, n_samples = rf.shape
+    n_coords = n_elements_x * n_elements_y
+    rf_data = rf[:, 0].reshape(n_frames, n_coords, n_samples)
+
+    print(f"rf_data shape: {rf_data.shape}")  # Expected shape: (nt, ncoords, nframes)
+
+    rf_gpu_input = np.ascontiguousarray(rf_data.astype(np.float32))
+
+    coords = np.zeros((3, lats.size * els.size), dtype=np.float32)
+    coords[:2] = np.array(np.meshgrid(lats, els)).reshape(2, -1)
+    coords = np.ascontiguousarray(coords.T.astype(np.float32))
+
+    print(f"rf_gpu_input shape: {rf_gpu_input.shape}")
+
+    bmode_lats = lats  # lats[20:-20]
+    bmode_els = els  # bmode_lats
+    bmode_deps = deps  # deps[200:300]
+
+    beamforming_grid = np.ascontiguousarray(
+        np.array(
+            np.meshgrid(lats, els, deps, indexing="ij")
+        )
+        .reshape(3, -1)
+        .T
+    ).astype(np.float32)
+
+    idt_matrix = compute_arrive_time(lats, els, deps,
+                                     idt0, theta, phi, 1 / fs, c0)
+
+
+    np.savez(os.path.join(basedir, 'at_variables.npz'),
+             arrivaltime_matrix=arrivaltime_matrix,
+             xaxis=xaxis,
+             yaxis=yaxis,
+             z=z)
