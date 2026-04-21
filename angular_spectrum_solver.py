@@ -20,8 +20,13 @@ import jax.numpy as jnp
 from jax import jit
 from functools import partial
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 import time as _time
+
+from tof_extraction import (
+    extract_tof_envelope as _extract_tof,
+    extract_tof_matched_filter_parabolic as _extract_tof_mf,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1022,9 +1027,15 @@ def make_bowl_source_planes(xaxis, yaxis, taxis, f0, c0, p0,
 # ---------------------------------------------------------------------------
 # Main solver
 # ---------------------------------------------------------------------------
-def angular_spectrum_solve(initial_field: np.ndarray,
-                           params: SolverParams,
-                           verbose: bool = True):
+def angular_spectrum_solve(
+        initial_field: np.ndarray,
+        params: SolverParams,
+        verbose: bool = True,
+        per_step_callback: Optional[Callable[[int, float, "jnp.ndarray"], None]] = None,
+        tof_ref_trace: Optional[np.ndarray] = None,
+        tof_t_ref_peak_s: Optional[float] = None,
+        tof_env_ratio: Optional[float] = None,
+        taxis: Optional[np.ndarray] = None):
     """
     Propagate a 3-D acoustic field using the modified angular spectrum method.
 
@@ -1036,6 +1047,38 @@ def angular_spectrum_solve(initial_field: np.ndarray,
         Physical and numerical parameters.
     verbose : bool
         Print progress.
+    per_step_callback : callable or None
+        If provided, called as ``per_step_callback(cc, z_cumulative, field)``
+        after each march step. ``cc`` is the step index, ``z_cumulative``
+        is the total propagated distance (m) up to and including the
+        current step, and ``field`` is the JAX array at the end of the
+        step. No-op when ``None`` (default); introduces a single ``is
+        None`` check per step when unused.
+    tof_ref_trace : ndarray (nT,) or None
+        Reference pulse used by the matched-filter-parabolic estimator
+        (``tof_extraction.extract_tof_matched_filter_parabolic``). When
+        this is provided, TOF extraction is enabled and this is the
+        preferred method (sub-sample accuracy). Requires
+        ``tof_t_ref_peak_s``. Takes precedence over ``tof_env_ratio``
+        if both are given.
+    tof_t_ref_peak_s : float or None
+        Time (s) at which ``tof_ref_trace`` itself peaks (envelope-
+        argmax time of the reference). Required when ``tof_ref_trace``
+        is provided.
+    tof_env_ratio : float or None
+        Envelope-based fallback: if provided (and ``tof_ref_trace`` is
+        not), the solver computes per-(x, y) TOF at each z-step using
+        ``tof_extraction.extract_tof_envelope`` with this threshold
+        fraction (``1.0`` picks the envelope-peak time).
+    taxis : ndarray (nT,) or None
+        Time axis used by the TOF extractor. If ``None``, defaults to
+        ``np.arange(nT) * params.dT``. Only consulted when TOF
+        extraction is enabled (``tof_ref_trace`` or ``tof_env_ratio``
+        is not ``None``).
+
+    TOF extraction is enabled when either ``tof_ref_trace`` or
+    ``tof_env_ratio`` is not ``None``; otherwise the returned tuple
+    has the original 7-element layout.
 
     Returns
     -------
@@ -1046,6 +1089,9 @@ def angular_spectrum_solve(initial_field: np.ndarray,
     pIloss: ndarray  (nX, nY, nZ) — intensity loss due to attenuation
     zaxis : ndarray  (nZ,)        — propagation coordinates
     pax   : ndarray  (nT, nZ)     — axial pressure trace
+    tof   : ndarray  (nX, nY, nZ) — time-of-flight at each step, only
+                                    returned when ``tof_env_ratio`` is
+                                    not ``None``.
     """
     jax.config.update("jax_enable_x64", True)
 
@@ -1137,6 +1183,22 @@ def angular_spectrum_solve(initial_field: np.ndarray,
     df = 1.0 / (nT * params.dT)  # frequency resolution
     f0_bin = params.f0 / df       # rfft bin index of center frequency
 
+    # --- TOF setup ---
+    # Enabled when either a reference pulse (matched-filter) or
+    # tof_env_ratio (envelope) is provided. Matched-filter takes
+    # precedence when both are set.
+    _tof_use_mf = tof_ref_trace is not None
+    _tof_enabled = _tof_use_mf or (tof_env_ratio is not None)
+    if _tof_enabled:
+        _tof_t = (np.asarray(taxis) if taxis is not None
+                  else np.arange(nT, dtype=np.float64) * params.dT)
+        if _tof_use_mf:
+            if tof_t_ref_peak_s is None:
+                raise ValueError(
+                    'tof_t_ref_peak_s is required when tof_ref_trace is provided')
+            _tof_ref = np.asarray(tof_ref_trace)
+            _tof_t_ref_peak = float(tof_t_ref_peak_s)
+
     # --- allocate output ---
     max_steps = int(np.ceil(params.propDist / dZ)) + 100
     pnp = np.zeros((nX, nY, max_steps), dtype=np.float32)
@@ -1144,6 +1206,7 @@ def angular_spectrum_solve(initial_field: np.ndarray,
     pI = np.zeros((nX, nY, max_steps), dtype=np.float32)
     pIloss = np.zeros((nX, nY, max_steps), dtype=np.float32)
     pax = np.zeros((nT, max_steps), dtype=np.float32)
+    tof = np.zeros((nX, nY, max_steps), dtype=np.float32) if _tof_enabled else None
 
     field = jnp.array(initial_field, dtype=jnp.float32)
     zvec = []
@@ -1174,6 +1237,8 @@ def angular_spectrum_solve(initial_field: np.ndarray,
             pI = np.zeros((nX, nY, max_steps), dtype=np.float32)
             pIloss = np.zeros((nX, nY, max_steps), dtype=np.float32)
             pax = np.zeros((nT, max_steps), dtype=np.float32)
+            if _tof_enabled:
+                tof = np.zeros((nX, nY, max_steps), dtype=np.float32)
             continue
 
         if verbose:
@@ -1251,6 +1316,18 @@ def angular_spectrum_solve(initial_field: np.ndarray,
         pax[:, cc] = field_np_after[nX // 2, nY // 2, :]
         zvec.append(dZ_step)
 
+        if _tof_enabled:
+            if _tof_use_mf:
+                tof[:, :, cc] = _extract_tof_mf(
+                    field_np_after, _tof_t, sum(zvec), c0,
+                    _tof_ref, _tof_t_ref_peak)
+            else:
+                tof[:, :, cc] = _extract_tof(
+                    field_np_after, _tof_t, sum(zvec), c0, tof_env_ratio)
+
+        if per_step_callback is not None:
+            per_step_callback(cc, sum(zvec), field)
+
         cc += 1
 
     elapsed = _time.time() - t0
@@ -1265,4 +1342,7 @@ def angular_spectrum_solve(initial_field: np.ndarray,
     pax = pax[:, :cc]
     zaxis = np.cumsum(zvec[:cc])
 
+    if _tof_enabled:
+        tof = tof[:, :, :cc]
+        return np.array(field), pnp, ppp, pI, pIloss, zaxis, pax, tof
     return np.array(field), pnp, ppp, pI, pIloss, zaxis, pax
