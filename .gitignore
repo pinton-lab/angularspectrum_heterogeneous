@@ -27,8 +27,8 @@ build/
 # Standalone plots (not in validation_results/)
 /*.png
 
-# Generated PDF
-manuscript.pdf
+# Generated PDFs (except manuscript)
+!manuscript.pdf
 
 # Large data files
 *.npz
