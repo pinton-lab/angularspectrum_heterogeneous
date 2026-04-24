@@ -68,11 +68,11 @@ for treatment planning and aberration correction.  Full-wave
 finite-difference time-domain (FDTD) solvers
 \cite{pinton2009,pinton2014} provide high fidelity but demand large
 3-D grids and long run times.  The angular spectrum method (ASM)
-\cite{christopher1991,du1985,zemp2010} offers an attractive
-alternative: by decomposing the field into plane-wave components and
-applying the exact free-space propagator in wavenumber space via the
-FFT, it avoids the paraxial approximation while remaining
-computationally efficient.  A further advantage of the ASM for
+\cite{christopher1991,du1985,zemp2010,dagrau2011,luo2020} offers an
+attractive alternative: by decomposing the field into plane-wave
+components and applying the exact free-space propagator in wavenumber
+space via the FFT, it avoids the paraxial approximation while
+remaining computationally efficient.  A further advantage of the ASM for
 therapeutic applications is its ability to support a fine temporal
 grid independently of the spatial grid.  In FDTD methods the temporal
 and spatial sampling are coupled through the CFL condition, so
@@ -82,7 +82,9 @@ Burgers update operates on a 1-D temporal axis at each spatial point,
 so the temporal sampling can be made arbitrarily fine without
 increasing the spatial grid size or the cost of the diffraction step.
 This makes the ASM particularly well suited to nonlinear propagation
-in the shock-forming regime.  The principal limitation of the ASM is
+in the shock-forming regime, including cubic nonlinearities in soft
+solids where shear shock waves develop over sub-wavelength distances
+\cite{pinton2010,giammarinaro2016}.  The principal limitation of the ASM is
 that it is a forward-only propagator: it cannot model reflections,
 mode conversion, or multiple scattering at acoustic interfaces.
 
@@ -897,7 +899,8 @@ This work was supported by the National Institutes of Health under
 grants R01EB029419 and R01EB036295.
 
 % ------------------------------------------------------------------
-The source code is available at
+The source code and all validation scripts needed to reproduce the
+figures in this paper are available at
 \url{https://github.com/gfpinton/angularspectrum_python}.
 
 \begin{thebibliography}{20}
@@ -906,6 +909,12 @@ The source code is available at
 P.~T. Christopher and K.~J. Parker,
 ``New approaches to nonlinear diffractive field propagation,''
 \textit{J.\ Acoust.\ Soc.\ Am.}, vol.~90, no.~1, pp.~488--499, 1991.
+
+\bibitem{dagrau2011}
+F.~Dagrau, M.~R\'{e}nier, R.~Marchiano, and F.~Coulouvrat,
+``Acoustic shock wave propagation in a heterogeneous medium: a
+numerical simulation beyond the parabolic approximation,''
+\textit{J.\ Acoust.\ Soc.\ Am.}, vol.~130, no.~1, pp.~20--32, 2011.
 
 \bibitem{du1985}
 G.~Du and M.~A. Breazeale,
@@ -916,6 +925,12 @@ G.~Du and M.~A. Breazeale,
 B.~Engquist and A.~Majda,
 ``Absorbing boundary conditions for the numerical simulation of waves,''
 \textit{Math.\ Comp.}, vol.~31, no.~139, pp.~629--651, 1977.
+
+\bibitem{giammarinaro2016}
+B.~Giammarinaro, F.~Coulouvrat, and G.~Pinton,
+``Numerical simulation of focused shock shear waves in soft solids and
+a two-dimensional nonlinear homogeneous model of the brain,''
+\textit{J.\ Biomech.\ Eng.}, vol.~138, no.~4, art.~041003, 2016.
 
 \bibitem{gottlieb2001}
 S.~Gottlieb, C.-W. Shu, and E.~Tadmor,
@@ -940,6 +955,12 @@ J.~Bradbury \textit{et~al.},
 \bibitem{kinsler2000}
 L.~E. Kinsler, A.~R. Frey, A.~B. Coppens, and J.~V. Sanders,
 \textit{Fundamentals of Acoustics}, 4th ed.\ New York: Wiley, 2000.
+
+\bibitem{luo2020}
+H.~Luo, J.~Kusunose, G.~Pinton, C.~F. Caskey, and W.~A. Grissom,
+``Rapid quantitative imaging of high intensity ultrasonic pressure
+fields,''
+\textit{J.\ Acoust.\ Soc.\ Am.}, vol.~148, no.~2, pp.~660--668, 2020.
 
 \bibitem{leveque2002}
 R.~J. LeVeque,
@@ -967,6 +988,11 @@ G.~F. Pinton, J.-F. Aubry, E.~Bossy, M.~Muller, M.~Pernot, and M.~Tanter,
 W.~L. Nyborg,
 ``Heat generation by ultrasound in a relaxing medium,''
 \textit{J.\ Acoust.\ Soc.\ Am.}, vol.~70, no.~2, pp.~310--312, 1981.
+
+\bibitem{pinton2010}
+G.~F. Pinton, F.~Coulouvrat, J.-L. Gennisson, and M.~Tanter,
+``Nonlinear reflection of shock shear waves in soft elastic media,''
+\textit{J.\ Acoust.\ Soc.\ Am.}, vol.~127, no.~2, pp.~683--691, 2010.
 
 \bibitem{pinton2014}
 G.~F. Pinton,
