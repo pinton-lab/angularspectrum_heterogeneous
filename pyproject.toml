@@ -1,0 +1,46 @@
+[project]
+name = "angularspectrum"
+version = "0.1.0"
+description = "Angular spectrum method for nonlinear ultrasound propagation in heterogeneous tissue with immersed sources"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LGPL-3.0-or-later"
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "matplotlib>=3.7.0",
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+]
+authors = [{ name = "Gianmarco Pinton" }]
+keywords = ["ultrasound", "angular-spectrum", "nonlinear-acoustics", "transcranial", "therapeutic-ultrasound"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Intended Audience :: Science/Research",
+]
+
+[project.optional-dependencies]
+transcranial = [
+    "h5py>=3.8.0",
+    "pynrrd>=1.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+include = ["angular_spectrum_solver.py"]
+
+[tool.ruff]
+line-length = 100
