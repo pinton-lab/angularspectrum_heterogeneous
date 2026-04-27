@@ -28,8 +28,9 @@ build/
 # Standalone plots (not in validation_results/)
 /*.png
 
-# Generated PDFs (except manuscript)
-!manuscript.pdf
+# Manuscript artifacts (kept local, published via arXiv)
+manuscript.pdf
+manuscript.tex~
 
 # Large data files
 *.npz
@@ -49,4 +50,6 @@ validation_results/transcranial/txrx_0/
 
 # Keep validation figure PNGs (override *.npz exclusion)
 !validation_results/**/*.png
+
+# Manuscript source (kept local, published via arXiv)
 manuscript.tex

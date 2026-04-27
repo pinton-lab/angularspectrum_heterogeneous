@@ -522,6 +522,7 @@ def main():
             useSuperAbsorbing=True, superAbsorbingStrength=0.5,
             stabilityThreshold=0.2, stabilityRecoveryFactor=0.15,
             dZmin=dZ,
+            useNonlinearityObliquity=True,
             phaseScreens=screens)
 
         field, pnp, ppp, pI, pIloss, zaxis, pax = angular_spectrum_solve(
@@ -540,6 +541,7 @@ def main():
             useSuperAbsorbing=True, superAbsorbingStrength=0.5,
             stabilityThreshold=0.2, stabilityRecoveryFactor=0.15,
             dZmin=dZ,
+            useNonlinearityObliquity=True,
             phaseScreens=None)
 
         field_h, pnp_h, ppp_h, pI_h, _, zaxis_h, pax_h = angular_spectrum_solve(

@@ -62,6 +62,14 @@ class SolverParams:
     superAbsorbingStrength: float = 0.8  # 0–1, fraction of incoming wave removed
     # --- flux scheme ---
     fluxScheme: str = 'rusanov'  # 'rusanov' | 'kt'  (Kurganov-Tadmor)
+    # --- obliquity correction on attenuation/dispersion filter ---
+    useObliquityCorrection: bool = True  # scale alpha, alphaStar by k/k_z per mode
+    # --- beam-averaged obliquity correction on the nonlinear operator ---
+    # Scales the Burgers coefficient N by the power-weighted <k/k_z> of the
+    # current plane-wave spectrum, so that the effective nonlinear path length
+    # matches the beam's mean obliquity rather than the axial step dz. Adds one
+    # FFT per march step when enabled.
+    useNonlinearityObliquity: bool = False
     # --- phase screens for heterogeneous propagation ---
     phaseScreens: object = None  # list of (z_position, screen_array) tuples
     # --- distributed source injection (bowl transducer) ---
@@ -454,29 +462,87 @@ def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0,
 
 
 # ---------------------------------------------------------------------------
-# Attenuation / dispersion — quadratic (water)
+# Attenuation / dispersion
 # ---------------------------------------------------------------------------
-def precalculate_ad(alpha0, nX, nY, nT, dZ, dT, c0, f0, split_step=False):
-    print('Precalculating attenuation filter (water, f^2)...')
+def _build_oblique_atten_filter(alpha, alphaStar, nX, nY, nT, dX, dY, dZ, c0,
+                                dT, scale=1.0, obliquity=True,
+                                clip_negative=True):
+    """Construct the obliquity-corrected attenuation/dispersion filter.
+
+    Per plane-wave mode (k_x, k_y, omega), the physical path length over one
+    axial step dZ is dZ/cos(theta) = dZ * k/k_z, where k = omega/c_0 and
+    k_z = sqrt(k^2 - k_perp^2). Applying alpha and alphaStar as pure
+    omega-only filters underestimates attenuation for oblique components;
+    multiplying the argument by k/k_z restores the correct path length.
+
+    Returned array has shape (nX, nY, nT), complex, in fftshifted-centered
+    (k_x, k_y) order and natural temporal-frequency order (matches the HH
+    propagator convention; _attenuation_step slices to the rfft support).
+
+    For evanescent modes (k_perp^2 > k^2), no obliquity correction is
+    applied (the diffraction propagator already decays these); for the
+    DC/zero-frequency bin the filter is unity.
+    """
+    # Transverse wavenumber grid in the same centered convention as HH
+    kx = np.linspace(0, nX - 1, nX) / (nX - 1) / dX * 2 * np.pi
+    kx -= np.mean(kx)
+    ky = np.linspace(0, nY - 1, nY) / (nY - 1) / dY * 2 * np.pi
+    ky -= np.mean(ky)
+    kk = kx[:, None] ** 2 + ky[None, :] ** 2  # (nX, nY)
+
+    f = np.arange(nT) / (nT * dT)
+    omega = 2 * np.pi * f
+    k = omega / c0  # |k| per temporal-frequency bin
+
+    afilt3d = np.ones((nX, nY, nT), dtype=np.complex128)
+    eps = 1e-6
+    for m in range(nT):
+        km = k[m]
+        if km == 0:
+            continue  # DC: no attenuation, filter stays unity
+        base = -(alpha[m] + 1j * alphaStar[m]) * dZ * scale
+        if obliquity:
+            kz_sq = km ** 2 - kk
+            prop = kz_sq > 0
+            kz_safe = np.where(prop, np.maximum(np.sqrt(np.maximum(kz_sq, 0.0)),
+                                                np.abs(km) * eps), 1.0)
+            obl = np.where(prop, np.abs(km) / kz_safe, 0.0)
+            factor = np.exp(base * obl)
+            # Evanescent modes: no extra attenuation beyond what HH does
+            factor = np.where(prop, factor, 1.0)
+        else:
+            factor = np.broadcast_to(np.exp(base), kk.shape)
+        afilt3d[:, :, m] = factor
+
+    if clip_negative:
+        afilt3d = np.where(np.real(afilt3d) < 0, 0, afilt3d)
+    return afilt3d
+
+
+def precalculate_ad(alpha0, nX, nY, nT, dX, dY, dZ, dT, c0, f0,
+                    split_step=False, obliquity=True):
+    print('Precalculating attenuation filter (water, f^2, '
+          f'{"obliquity-corrected" if obliquity else "omega-only"})...')
     f = np.arange(nT) / (nT * dT)
     conv = alpha0 / 1e12 * 1e2 / (20 * np.log10(np.e))
     alpha = conv * f ** 2
 
-    # Kramers-Kronig dispersion for f^2 law
     alphaStar0 = (conv / (2 * np.pi) ** 2) * np.tan(np.pi) * \
                  ((2 * np.pi * f) ** 1 - (2 * np.pi * f0) ** 1)
     alphaStar = 2 * np.pi * alphaStar0 * f
     alphaStar[0] = 0
 
-    afilt = np.exp((-alpha - 1j * alphaStar) * dZ)
-    afilt = np.where(np.real(afilt) < 0, 0, afilt)
-    afilt3d = np.broadcast_to(afilt[np.newaxis, np.newaxis, :], (nX, nY, nT)).copy()
+    afilt3d = _build_oblique_atten_filter(alpha, alphaStar, nX, nY, nT,
+                                          dX, dY, dZ, c0, dT,
+                                          scale=1.0, obliquity=obliquity)
 
     afilt3d_half = None
     if split_step:
-        afilt_h = np.exp((-alpha - 1j * alphaStar) * dZ / 2)
-        afilt_h = np.where(np.real(afilt_h) < 0, 0, afilt_h)
-        afilt3d_half = np.broadcast_to(afilt_h[np.newaxis, np.newaxis, :], (nX, nY, nT)).copy()
+        afilt3d_half = _build_oblique_atten_filter(alpha, alphaStar,
+                                                   nX, nY, nT,
+                                                   dX, dY, dZ, c0, dT,
+                                                   scale=0.5,
+                                                   obliquity=obliquity)
 
     print('done.')
     return afilt3d, afilt3d_half
@@ -485,9 +551,10 @@ def precalculate_ad(alpha0, nX, nY, nT, dZ, dT, c0, f0, split_step=False):
 # ---------------------------------------------------------------------------
 # Attenuation / dispersion — general power law
 # ---------------------------------------------------------------------------
-def precalculate_ad_pow2(alpha0, nX, nY, nT, dZ, dT, c0, f0, pw,
-                         split_step=False):
-    print(f'Precalculating attenuation filter (f^{pw} power law)...')
+def precalculate_ad_pow2(alpha0, nX, nY, nT, dX, dY, dZ, dT, c0, f0, pw,
+                         split_step=False, obliquity=True):
+    print(f'Precalculating attenuation filter (f^{pw} power law, '
+          f'{"obliquity-corrected" if obliquity else "omega-only"})...')
     f = np.arange(nT) / (nT * dT)
     f_safe = f.copy()
     f_safe[0] = f_safe[1] / 2  # avoid log(0)
@@ -505,17 +572,74 @@ def precalculate_ad_pow2(alpha0, nX, nY, nT, dZ, dT, c0, f0, pw,
     alphaStar = 2 * np.pi * alphaStar0 * f
     alphaStar[0] = 0
 
-    afilt = np.exp((-alpha - 1j * alphaStar) * dZ)
-    afilt3d = np.broadcast_to(afilt[np.newaxis, np.newaxis, :], (nX, nY, nT)).copy()
+    afilt3d = _build_oblique_atten_filter(alpha, alphaStar, nX, nY, nT,
+                                          dX, dY, dZ, c0, dT,
+                                          scale=1.0, obliquity=obliquity,
+                                          clip_negative=False)
 
     afilt3d_half = None
     if split_step:
-        afilt_h = np.exp((-alpha - 1j * alphaStar) * dZ / 2)
-        afilt3d_half = np.broadcast_to(afilt_h[np.newaxis, np.newaxis, :], (nX, nY, nT)).copy()
+        afilt3d_half = _build_oblique_atten_filter(alpha, alphaStar,
+                                                   nX, nY, nT,
+                                                   dX, dY, dZ, c0, dT,
+                                                   scale=0.5,
+                                                   obliquity=obliquity,
+                                                   clip_negative=False)
 
     dispersion = 1.0 / ((1.0 / c0) + (alphaStar / (2 * np.pi * f_safe)))
     print('done.')
     return afilt3d, afilt3d_half, f, alpha, dispersion
+
+
+# ---------------------------------------------------------------------------
+# Beam-averaged obliquity for the nonlinear operator
+# ---------------------------------------------------------------------------
+def precalculate_obliquity_map(nX, nY, nT, dX, dY, dT, c0):
+    """Per-mode 1/cos(theta) = k/k_z on the rfft temporal grid.
+
+    Returns a float32 array of shape (nX, nY, nT//2+1) in fftshifted-centered
+    (k_x, k_y) order, zero for evanescent modes and for the DC bin.
+    """
+    kx = np.linspace(0, nX - 1, nX) / (nX - 1) / dX * 2 * np.pi
+    kx -= np.mean(kx)
+    ky = np.linspace(0, nY - 1, nY) / (nY - 1) / dY * 2 * np.pi
+    ky -= np.mean(ky)
+    kk = kx[:, None] ** 2 + ky[None, :] ** 2  # (nX, nY)
+
+    n_freq = nT // 2 + 1
+    f = np.arange(n_freq) / (nT * dT)
+    k_tf = 2 * np.pi * f / c0  # (n_freq,)
+
+    obl_map = np.zeros((nX, nY, n_freq), dtype=np.float32)
+    eps = 1e-6
+    for m in range(n_freq):
+        km = k_tf[m]
+        if km == 0:
+            continue
+        kz_sq = km ** 2 - kk
+        prop = kz_sq > 0
+        kz_safe = np.where(prop,
+                           np.maximum(np.sqrt(np.maximum(kz_sq, 0.0)),
+                                      np.abs(km) * eps),
+                           1.0)
+        obl_map[:, :, m] = np.where(prop, np.abs(km) / kz_safe, 0.0).astype(np.float32)
+    return obl_map
+
+
+@jit
+def _beam_obliquity_scalar(field, obl_map):
+    """Power-weighted <k/k_z> over the propagating plane-wave content.
+
+    Returns a scalar in [1, inf); equals 1 for an axially-propagating beam and
+    grows as rim rays take larger angles from z.
+    """
+    F = jnp.fft.rfft(field, axis=2)               # (nX, nY, nT//2+1)
+    F = jnp.fft.fftshift(jnp.fft.fft2(F, axes=(0, 1)), axes=(0, 1))
+    P = (F.real ** 2 + F.imag ** 2).astype(obl_map.dtype)
+    prop_mask = (obl_map > 0).astype(obl_map.dtype)
+    num = jnp.sum(P * obl_map)
+    denom = jnp.sum(P * prop_mask) + 1e-30
+    return num / denom
 
 
 # ---------------------------------------------------------------------------
@@ -541,9 +665,23 @@ def _freq_weighted_boundary_step(field, abl_freq):
 
 @jit
 def _attenuation_step(field, afilt3d):
-    """Full-step attenuation/dispersion via FFT along axis 2."""
+    """Obliquity-corrected attenuation/dispersion.
+
+    afilt3d has shape (nX, nY, nT//2+1), complex, in fftshifted-centered
+    (k_x, k_y) order (same convention as the HH propagator). For each
+    propagating plane-wave mode the filter carries a k/k_z factor that
+    applies alpha and alphaStar over the correct per-mode path length
+    dZ/cos(theta); evanescent modes see an identity filter since the
+    diffraction step already handles their decay.
+    """
     nT = field.shape[2]
-    return jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d, n=nT, axis=2)
+    F = jnp.fft.rfft(field, axis=2)               # (nX, nY, nT//2+1) — (x, y, omega)
+    F = jnp.fft.fft2(F, axes=(0, 1))              # (k_x, k_y, omega), natural order
+    F = jnp.fft.fftshift(F, axes=(0, 1))          # centered (k_x, k_y)
+    F = F * afilt3d
+    F = jnp.fft.ifftshift(F, axes=(0, 1))
+    F = jnp.fft.ifft2(F, axes=(0, 1))
+    return jnp.fft.irfft(F, n=nT, axis=2).real
 
 
 @jit
@@ -737,44 +875,92 @@ def march_step_sequential(field, HH, abl, afilt3d, N, dZ, dT):
     """Original Lie (sequential) splitting — 1st-order."""
     field = _angular_spectrum_step(field, HH, abl)
     field = _rusanov_flux_standard(field, N, dZ, dT)
-    nT = field.shape[2]
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d)
     return field
 
 
 @jit
 def march_step_split_standard(field, HH_half, abl_half, afilt3d_half, N, dZ, dT):
     """Strang split-step with standard Rusanov flux (no TVD)."""
-    nT = field.shape[2]
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
     field = _angular_spectrum_step(field, HH_half, abl_half)
     field = _rusanov_flux_standard(field, N, dZ, dT)
     field = _angular_spectrum_step(field, HH_half, abl_half)
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
     return field
 
 
 @partial(jit, static_argnums=())
 def march_step_split_tvd(field, HH_half, abl_half, afilt3d_half, N, dZ, dT, beta_tvd):
     """Strang split-step with TVD-limited Rusanov flux."""
-    nT = field.shape[2]
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
     field = _angular_spectrum_step(field, HH_half, abl_half)
     field = _rusanov_flux_tvd(field, N, dZ, dT, beta_tvd)
     field = _angular_spectrum_step(field, HH_half, abl_half)
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
     return field
 
 
 @jit
 def march_step_split_kt(field, HH_half, abl_half, afilt3d_half, N, dZ, dT):
     """Strang split-step with second-order KT nonlinear flux."""
-    nT = field.shape[2]
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
     field = _angular_spectrum_step(field, HH_half, abl_half)
     field = _kt_flux(field, N, dZ, dT)
     field = _angular_spectrum_step(field, HH_half, abl_half)
-    field = jnp.fft.irfft(jnp.fft.rfft(field, axis=2) * afilt3d_half, n=nT, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+# --- variants with beam-averaged obliquity correction on the nonlinear step ---
+# The Burgers coefficient N is scaled by <k/k_z>, the power-weighted mean
+# obliquity of the current plane-wave spectrum entering the nonlinear step.
+# This corrects the effective path length dz -> dz/<cos(theta)> so that a
+# strongly-focused beam whose rim rays travel at angles theta from z
+# accumulates nonlinear steepening over the correct physical distance.
+
+@jit
+def march_step_sequential_obl(field, HH, abl, afilt3d, obl_map, N, dZ, dT):
+    field = _angular_spectrum_step(field, HH, abl)
+    N_eff = N * _beam_obliquity_scalar(field, obl_map)
+    field = _rusanov_flux_standard(field, N_eff, dZ, dT)
+    field = _attenuation_step(field, afilt3d)
+    return field
+
+
+@jit
+def march_step_split_standard_obl(field, HH_half, abl_half, afilt3d_half,
+                                  obl_map, N, dZ, dT):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N_eff = N * _beam_obliquity_scalar(field, obl_map)
+    field = _rusanov_flux_standard(field, N_eff, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@partial(jit, static_argnums=())
+def march_step_split_tvd_obl(field, HH_half, abl_half, afilt3d_half,
+                             obl_map, N, dZ, dT, beta_tvd):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N_eff = N * _beam_obliquity_scalar(field, obl_map)
+    field = _rusanov_flux_tvd(field, N_eff, dZ, dT, beta_tvd)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@jit
+def march_step_split_kt_obl(field, HH_half, abl_half, afilt3d_half,
+                            obl_map, N, dZ, dT):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N_eff = N * _beam_obliquity_scalar(field, obl_map)
+    field = _kt_flux(field, N_eff, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
     return field
 
 
@@ -1129,12 +1315,16 @@ def angular_spectrum_solve(
         if alpha0_eff < 0:  # water
             a0w = 2.17e-3
             afilt3d, afilt3d_half = precalculate_ad(
-                a0w, nX, nY, nT, dZ, params.dT, c0, params.f0,
-                split_step=params.useSplitStep)
+                a0w, nX, nY, nT, params.dX, params.dY, dZ, params.dT,
+                c0, params.f0,
+                split_step=params.useSplitStep,
+                obliquity=params.useObliquityCorrection)
         else:
             afilt3d, afilt3d_half, _, _, _ = precalculate_ad_pow2(
-                alpha0_eff, nX, nY, nT, dZ, params.dT, c0, params.f0, pw,
-                split_step=params.useSplitStep)
+                alpha0_eff, nX, nY, nT, params.dX, params.dY, dZ, params.dT,
+                c0, params.f0, pw,
+                split_step=params.useSplitStep,
+                obliquity=params.useObliquityCorrection)
 
         # Convert to rfft-compatible shapes (positive frequencies only)
         def _to_rfft(arr):
@@ -1178,6 +1368,12 @@ def angular_spectrum_solve(
         return ops
 
     ops = _to_jax(HH, HH_half, abl_np, abl_half_np, afilt3d_np, afilt3d_half_np)
+
+    # Beam-averaged obliquity map for nonlinearity correction (optional)
+    if params.useNonlinearityObliquity:
+        obl_map_np = precalculate_obliquity_map(
+            nX, nY, nT, params.dX, params.dY, params.dT, c0)
+        ops['obl_map'] = jnp.array(obl_map_np, dtype=jnp.float32)
 
     # Compute f0 bin index for phase screen application
     df = 1.0 / (nT * params.dT)  # frequency resolution
@@ -1252,25 +1448,47 @@ def angular_spectrum_solve(
             step_ops_tuple = _build_operators(dZ_step)
             step_ops = _to_jax(*step_ops_tuple)
 
+        use_obl_nl = params.useNonlinearityObliquity
+        obl_map_op = ops.get('obl_map') if use_obl_nl else None
         if params.useSplitStep:
             if params.fluxScheme == 'kt':
-                field = march_step_split_kt(
-                    field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
-                    N, dZ_step, params.dT)
+                if use_obl_nl:
+                    field = march_step_split_kt_obl(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        obl_map_op, N, dZ_step, params.dT)
+                else:
+                    field = march_step_split_kt(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        N, dZ_step, params.dT)
             elif params.useTVD:
                 norm_step = dZ_step / (c0 / params.f0)
                 beta_tvd = max(1.0, 2.0 - params.adaptiveFilterStrength * norm_step * 10)
-                field = march_step_split_tvd(
-                    field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
-                    N, dZ_step, params.dT, beta_tvd)
+                if use_obl_nl:
+                    field = march_step_split_tvd_obl(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        obl_map_op, N, dZ_step, params.dT, beta_tvd)
+                else:
+                    field = march_step_split_tvd(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        N, dZ_step, params.dT, beta_tvd)
             else:
-                field = march_step_split_standard(
-                    field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
-                    N, dZ_step, params.dT)
+                if use_obl_nl:
+                    field = march_step_split_standard_obl(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        obl_map_op, N, dZ_step, params.dT)
+                else:
+                    field = march_step_split_standard(
+                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                        N, dZ_step, params.dT)
         else:
-            field = march_step_sequential(
-                field, step_ops['HH'], step_ops['abl'], step_ops['afilt3d'],
-                N, dZ_step, params.dT)
+            if use_obl_nl:
+                field = march_step_sequential_obl(
+                    field, step_ops['HH'], step_ops['abl'], step_ops['afilt3d'],
+                    obl_map_op, N, dZ_step, params.dT)
+            else:
+                field = march_step_sequential(
+                    field, step_ops['HH'], step_ops['abl'], step_ops['afilt3d'],
+                    N, dZ_step, params.dT)
 
         # --- enhanced boundary treatments (applied after each march step) ---
         if params.useFreqWeightedBoundary:

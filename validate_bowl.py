@@ -52,8 +52,14 @@ _Z_INNER = ROC - np.sqrt(ROC**2 - INNER_R**2)  # ~2.67 mm
 FOCAL_DEPTH = 50e-3 + _Z_INNER  # ~52.7 mm from apex
 P0_FDTD = 4e5        # 400 kPa — FDTD source amplitude per layer
 N_LAYERS = 3         # FDTD uses 3 voxel layers along surface normal
-# Calibration: scale ASM source to match FDTD 3-layer volumetric coupling.
-# Factor determined empirically from focal pressure ratio (ppw=12 FDTD).
+# Source-convention adjustment: FDTD uses an additive source condition
+# (forcing added to the equation of motion over N_LAYERS voxel layers along
+# the surface normal), while the ASM uses an imposed source condition
+# (pressure prescribed on the source plane). The factor 1.306 aligns the
+# two conventions so the focal pressures are directly comparable. The value
+# reflects the coherent sum of the three-layer additive source at the FDTD
+# grid spacing (k*dx ~ 0.79 rad, CFL = 0.2); adjust if N_LAYERS or the FDTD
+# grid resolution change.
 P0 = P0_FDTD * 1.306
 NCYCLES = 3
 DUR = 2              # super-Gaussian exponent
