@@ -450,11 +450,12 @@ def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0,
             Hh *= filt_mask
             HH_half[:, :, m] = Hh
 
-    # Zero negative frequencies & double positive
-    HH[:, :, :(nT + 1) // 2] = 0
+    # Zero negative frequencies & DC bin, then double positive frequencies.
+    # +1 so the DC bin (index nT/2 for even nT) is included in the zeroed half.
+    HH[:, :, :nT // 2 + 1] = 0
     HH *= 2
     if split_step:
-        HH_half[:, :, :(nT + 1) // 2] = 0
+        HH_half[:, :, :nT // 2 + 1] = 0
         HH_half *= 2
 
     print('done.')
